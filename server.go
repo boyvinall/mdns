@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
+	"os"
 )
 
 const (
@@ -41,12 +42,16 @@ type Config struct {
 	// LogEmptyResponses indicates the server should print an informative message
 	// when there is an mDNS query for which the server has no response.
 	LogEmptyResponses bool
+
+	Logger *log.Logger
 }
 
 // mDNS server is used to listen for mDNS queries and respond if we
 // have a matching local record
 type Server struct {
 	config *Config
+
+	logger *log.Logger
 
 	ipv4List *net.UDPConn
 	ipv6List *net.UDPConn
@@ -62,13 +67,18 @@ func NewServer(config *Config) (*Server, error) {
 	ipv4List, _ := net.ListenMulticastUDP("udp4", config.Iface, ipv4Addr)
 	ipv6List, _ := net.ListenMulticastUDP("udp6", config.Iface, ipv6Addr)
 
+	if config.Logger == nil {
+		config.Logger = log.New(os.Stderr, "", 0)
+	}
+
 	// Check if we have any listener
 	if ipv4List == nil && ipv6List == nil {
 		return nil, fmt.Errorf("No multicast listeners could be started")
 	}
 
 	s := &Server{
-		config:     config,
+		config: config,
+		logger: config.Logger,
 		ipv4List:   ipv4List,
 		ipv6List:   ipv6List,
 		shutdownCh: make(chan struct{}),
@@ -117,7 +127,7 @@ func (s *Server) recv(c *net.UDPConn) {
 			continue
 		}
 		if err := s.parsePacket(buf[:n], from); err != nil {
-			log.Printf("[ERR] mdns: Failed to handle query: %v", err)
+			s.logger.Printf("[ERR] mdns: Failed to handle query: %v", err)
 		}
 	}
 }
@@ -126,7 +136,7 @@ func (s *Server) recv(c *net.UDPConn) {
 func (s *Server) parsePacket(packet []byte, from net.Addr) error {
 	var msg dns.Msg
 	if err := msg.Unpack(packet); err != nil {
-		log.Printf("[ERR] mdns: Failed to unpack packet: %v", err)
+		s.logger.Printf("[ERR] mdns: Failed to unpack packet: %v", err)
 		return err
 	}
 	return s.handleQuery(&msg, from)
@@ -225,7 +235,7 @@ func (s *Server) handleQuery(query *dns.Msg, from net.Addr) error {
 		for i, q := range query.Question {
 			questions[i] = q.Name
 		}
-		log.Printf("no responses for query with questions: %s", strings.Join(questions, ", "))
+		s.logger.Printf("no responses for query with questions: %s", strings.Join(questions, ", "))
 	}
 
 	if mresp := resp(false); mresp != nil {

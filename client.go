@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/go.net/ipv4"
 	"github.com/hashicorp/go.net/ipv6"
 	"github.com/miekg/dns"
+	"os"
 )
 
 // ServiceEntry is returned after we query for a service
@@ -42,6 +43,7 @@ type QueryParam struct {
 	Interface           *net.Interface       // Multicast interface to use
 	Entries             chan<- *ServiceEntry // Entries Channel
 	WantUnicastResponse bool                 // Unicast response desired, as per 5.4 in RFC
+	Logger              *log.Logger
 }
 
 // DefaultParams is used to return a default set of QueryParam's
@@ -52,6 +54,7 @@ func DefaultParams(service string) *QueryParam {
 		Timeout:             time.Second,
 		Entries:             make(chan *ServiceEntry),
 		WantUnicastResponse: false, // TODO(reddaly): Change this default.
+		Logger: log.New(os.Stderr, "", 0),
 	}
 }
 
@@ -61,7 +64,7 @@ func DefaultParams(service string) *QueryParam {
 // either read or buffer.
 func Query(params *QueryParam) error {
 	// Create a new client
-	client, err := newClient()
+	client, err := newClient(params.Logger)
 	if err != nil {
 		return err
 	}
@@ -102,6 +105,7 @@ type client struct {
 	ipv4MulticastConn *net.UDPConn
 	ipv6MulticastConn *net.UDPConn
 
+	logger    *log.Logger
 	closed    bool
 	closedCh  chan struct{} // TODO(reddaly): This doesn't appear to be used.
 	closeLock sync.Mutex
@@ -109,16 +113,16 @@ type client struct {
 
 // NewClient creates a new mdns Client that can be used to query
 // for records
-func newClient() (*client, error) {
+func newClient(logger *log.Logger) (*client, error) {
 	// TODO(reddaly): At least attempt to bind to the port required in the spec.
 	// Create a IPv4 listener
 	uconn4, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		log.Printf("[ERR] mdns: Failed to bind to udp4 port: %v", err)
+		logger.Printf("[ERR] mdns: Failed to bind to udp4 port: %v", err)
 	}
 	uconn6, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6zero, Port: 0})
 	if err != nil {
-		log.Printf("[ERR] mdns: Failed to bind to udp6 port: %v", err)
+		logger.Printf("[ERR] mdns: Failed to bind to udp6 port: %v", err)
 	}
 
 	if uconn4 == nil && uconn6 == nil {
@@ -127,11 +131,11 @@ func newClient() (*client, error) {
 
 	mconn4, err := net.ListenMulticastUDP("udp4", nil, ipv4Addr)
 	if err != nil {
-		log.Printf("[ERR] mdns: Failed to bind to udp4 port: %v", err)
+		logger.Printf("[ERR] mdns: Failed to bind to udp4 port: %v", err)
 	}
 	mconn6, err := net.ListenMulticastUDP("udp6", nil, ipv6Addr)
 	if err != nil {
-		log.Printf("[ERR] mdns: Failed to bind to udp6 port: %v", err)
+		logger.Printf("[ERR] mdns: Failed to bind to udp6 port: %v", err)
 	}
 
 	if mconn4 == nil && mconn6 == nil {
@@ -143,6 +147,7 @@ func newClient() (*client, error) {
 		ipv6MulticastConn: mconn6,
 		ipv4UnicastConn:   uconn4,
 		ipv6UnicastConn:   uconn6,
+		logger:            logger,
 		closedCh:          make(chan struct{}),
 	}
 	return c, nil
@@ -158,7 +163,6 @@ func (c *client) Close() error {
 	}
 	c.closed = true
 
-	log.Printf("[INFO] mdns: Closing client %v", *c)
 	close(c.closedCh)
 
 	if c.ipv4UnicastConn != nil {
@@ -296,7 +300,7 @@ func (c *client) query(params *QueryParam) error {
 				m.SetQuestion(inp.Name, dns.TypePTR)
 				m.RecursionDesired = false
 				if err := c.sendQuery(m); err != nil {
-					log.Printf("[ERR] mdns: Failed to query instance %s: %v", inp.Name, err)
+					c.logger.Printf("[ERR] mdns: Failed to query instance %s: %v", inp.Name, err)
 				}
 			}
 		case <-finish:
@@ -329,12 +333,14 @@ func (c *client) recv(l *net.UDPConn, msgCh chan *dns.Msg) {
 	for !c.closed {
 		n, err := l.Read(buf)
 		if err != nil {
-			log.Printf("[ERR] mdns: Failed to read packet: %v", err)
+			if !c.closed {
+				c.logger.Printf("[ERR] mdns: Failed to read packet: %v", err)
+			}
 			continue
 		}
 		msg := new(dns.Msg)
 		if err := msg.Unpack(buf[:n]); err != nil {
-			log.Printf("[ERR] mdns: Failed to unpack packet: %v", err)
+			c.logger.Printf("[ERR] mdns: Failed to unpack packet: %v", err)
 			continue
 		}
 		select {
