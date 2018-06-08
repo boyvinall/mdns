@@ -1,6 +1,7 @@
 package mdns
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -37,9 +38,9 @@ func (s *ServiceEntry) complete() bool {
 
 // QueryParam is used to customize how a Lookup is performed
 type QueryParam struct {
+	Context             context.Context      // Used for timeouts and/or cancellation.  Leave as nil for default 1 second timeout
 	Service             string               // Service to lookup
 	Domain              string               // Lookup domain, default "local"
-	Timeout             time.Duration        // Lookup timeout, default 1 second
 	Interface           *net.Interface       // Multicast interface to use
 	Entries             chan<- *ServiceEntry // Entries Channel
 	WantUnicastResponse bool                 // Unicast response desired, as per 5.4 in RFC
@@ -51,7 +52,6 @@ func DefaultParams(service string) *QueryParam {
 	return &QueryParam{
 		Service:             service,
 		Domain:              "local",
-		Timeout:             time.Second,
 		Entries:             make(chan *ServiceEntry),
 		WantUnicastResponse: false, // TODO(reddaly): Change this default.
 		Logger:              log.New(os.Stderr, "", 0),
@@ -81,8 +81,11 @@ func Query(params *QueryParam) error {
 	if params.Domain == "" {
 		params.Domain = "local"
 	}
-	if params.Timeout == 0 {
-		params.Timeout = time.Second
+
+	if params.Context == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		params.Context = ctx
+		defer cancel()
 	}
 
 	// Run the query
@@ -90,9 +93,10 @@ func Query(params *QueryParam) error {
 }
 
 // Lookup is the same as Query, however it uses all the default parameters
-func Lookup(service string, entries chan<- *ServiceEntry) error {
+func Lookup(ctx context.Context, service string, entries chan<- *ServiceEntry) error {
 	params := DefaultParams(service)
 	params.Entries = entries
+	params.Context = ctx
 	return Query(params)
 }
 
@@ -235,8 +239,6 @@ func (c *client) query(params *QueryParam) error {
 	// Map the in-progress responses
 	inprogress := make(map[string]*ServiceEntry)
 
-	// Listen until we reach the timeout
-	finish := time.After(params.Timeout)
 	for {
 		select {
 		case resp := <-msgCh:
@@ -303,7 +305,7 @@ func (c *client) query(params *QueryParam) error {
 					c.logger.Printf("[ERR] mdns: Failed to query instance %s: %v", inp.Name, err)
 				}
 			}
-		case <-finish:
+		case <-params.Context.Done():
 			return nil
 		}
 	}
