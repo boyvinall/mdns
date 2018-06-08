@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/hashicorp/go.net/ipv4"
-	"github.com/hashicorp/go.net/ipv6"
 	"github.com/miekg/dns"
-	"os"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 // ServiceEntry is returned after we query for a service
@@ -54,7 +54,7 @@ func DefaultParams(service string) *QueryParam {
 		Timeout:             time.Second,
 		Entries:             make(chan *ServiceEntry),
 		WantUnicastResponse: false, // TODO(reddaly): Change this default.
-		Logger: log.New(os.Stderr, "", 0),
+		Logger:              log.New(os.Stderr, "", 0),
 	}
 }
 
